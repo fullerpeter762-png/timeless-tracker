@@ -1,0 +1,15 @@
+name: Oddify Auto-Tracker
+on:
+  schedule:
+    - cron: '0 7,13,19 * * *'
+  workflow_dispatch:
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - run: python oddify_api.py
