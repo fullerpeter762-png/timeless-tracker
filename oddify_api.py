@@ -49,12 +49,13 @@ def fetch_pinnacle_odds(sport_key):
     """Holt Pinnacle Quoten für einen Sport"""
     api_sport = ODDS_SPORTS.get(sport_key)
     if not api_sport:
-        print(f"  ℹ️  Kein Odds API Mapping für {sport_key}")
+        print(f"  ℹ️  Kein Odds API Mapping für '{sport_key}'")
         return {}
-    
+
     if api_sport in _odds_cache:
         return _odds_cache[api_sport]
-    
+
+    print(f"  🌐 Odds API: {api_sport}...")
     try:
         r = requests.get(
             f"https://api.the-odds-api.com/v4/sports/{api_sport}/odds/",
@@ -67,8 +68,11 @@ def fetch_pinnacle_odds(sport_key):
             },
             timeout=15
         )
-        
+        print(f"  → Status: {r.status_code}")
         remaining = r.headers.get('x-requests-remaining', '?')
+        if r.status_code != 200:
+            print(f"  ❌ Odds API Fehler: {r.text[:200]}")
+            return {}
         
         if r.status_code != 200:
             print(f"  ⚠️  Odds API {r.status_code}: {r.text[:100]}")
