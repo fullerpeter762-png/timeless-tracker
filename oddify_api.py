@@ -22,6 +22,113 @@ BANKROLL = 150
 KELLY    = 0.125
 
 # ══════════════════════════════════════════════════════
+#  THE ODDS API — Pinnacle Quoten
+# ══════════════════════════════════════════════════════
+ODDS_API_KEY = "cea8666183e600c00986faa203b656b2"
+
+# Sport-Keys für The Odds API
+ODDS_SPORTS = {
+    "nba":                        "basketball_nba",
+    "football_bundesliga":        "soccer_germany_bundesliga",
+    "football_2bundesliga":       "soccer_germany_bundesliga2",
+    "football_premier_league":    "soccer_epl",
+    "football_champions_league":  "soccer_uefa_champs_league",
+    "football_europa_league":     "soccer_uefa_europa_league",
+    "football_serie_a":           "soccer_italy_serie_a",
+    "football_laliga":            "soccer_spain_la_liga",
+    "football_ligue1":            "soccer_france_ligue_one",
+    "tennis":                     "tennis_atp_french_open",  # wird dynamisch ersetzt
+}
+
+_odds_cache = {}  # Cache damit wir nicht zu viele API Requests machen
+
+def fetch_pinnacle_odds(sport_key):
+    """Holt Pinnacle Quoten für einen Sport"""
+    api_sport = ODDS_SPORTS.get(sport_key, "basketball_nba")
+    
+    if api_sport in _odds_cache:
+        return _odds_cache[api_sport]
+    
+    try:
+        r = requests.get(
+            f"https://api.the-odds-api.com/v4/sports/{api_sport}/odds/",
+            params={
+                "apiKey": ODDS_API_KEY,
+                "regions": "eu",
+                "markets": "h2h",
+                "oddsFormat": "decimal",
+                "bookmakers": "pinnacle"
+            },
+            timeout=15
+        )
+        
+        remaining = r.headers.get('x-requests-remaining', '?')
+        
+        if r.status_code != 200:
+            print(f"  ⚠️  Odds API {r.status_code}: {r.text[:100]}")
+            return {}
+        
+        odds_map = {}
+        for game in r.json():
+            home = game.get('home_team', '')
+            away = game.get('away_team', '')
+            home_odds = 0
+            away_odds = 0
+            draw_odds = 0
+            
+            for bm in game.get('bookmakers', []):
+                for mk in bm.get('markets', []):
+                    if mk['key'] == 'h2h':
+                        for oc in mk['outcomes']:
+                            if oc['name'] == home:
+                                home_odds = max(home_odds, oc['price'])
+                            elif oc['name'] == away:
+                                away_odds = max(away_odds, oc['price'])
+                            elif oc['name'] == 'Draw':
+                                draw_odds = max(draw_odds, oc['price'])
+            
+            # Speichere unter Teamname (lowercase für matching)
+            key = f"{home}|{away}".lower()
+            odds_map[key] = {
+                'home': home_odds, 'away': away_odds, 'draw': draw_odds,
+                'home_team': home, 'away_team': away
+            }
+        
+        print(f"  📊 Pinnacle {api_sport}: {len(odds_map)} Spiele | {remaining} Requests übrig")
+        _odds_cache[api_sport] = odds_map
+        return odds_map
+        
+    except Exception as e:
+        print(f"  ⚠️  Odds API Fehler ({api_sport}): {e}")
+        return {}
+
+def find_pinnacle_odds(home_team, away_team, odds_map):
+    """Sucht Pinnacle Quote für zwei Teams — fuzzy matching"""
+    if not odds_map:
+        return 0, 0, 0
+    
+    home_l = home_team.lower()
+    away_l = away_team.lower()
+    
+    # Exakte Match
+    key = f"{home_l}|{away_l}"
+    if key in odds_map:
+        d = odds_map[key]
+        return d['home'], d['away'], d.get('draw', 0)
+    
+    # Fuzzy: suche nach Teilstrings
+    for k, v in odds_map.items():
+        h, a = k.split('|')
+        # NBA Abkürzungen (z.B. "OKC" in "Oklahoma City Thunder")
+        if (home_l in h or h in home_l or home_l[:3] in h) and            (away_l in a or a in away_l or away_l[:3] in a):
+            return v['home'], v['away'], v.get('draw', 0)
+        # Umgekehrt (home/away manchmal vertauscht)
+        if (home_l in a or a in home_l) and (away_l in h or h in away_l):
+            return v['away'], v['home'], v.get('draw', 0)
+    
+    return 0, 0, 0
+
+# ══════════════════════════════════════════════════════
 #  LOGIN — holt JWT Token und User ID
 # ══════════════════════════════════════════════════════
 def login():
@@ -169,6 +276,8 @@ def fetch_nba():
     return data
 
 def proc_nba(games):
+    # Pinnacle Quoten einmalig holen
+    pinnacle = fetch_pinnacle_odds("nba")
     out = []
     for g in games:
         try:
@@ -177,8 +286,10 @@ def proc_nba(games):
             name = f"{home} vs {away}"
             hws  = float(g.get('team_a_win_prob', 0) or 0) * 100
             aws  = float(g.get('team_b_win_prob', 0) or 0) * 100
-            hq   = float(g.get('home_odds_decimal', 0) or 0)
-            aq   = float(g.get('away_odds_decimal', 0) or 0)
+            # Pinnacle Quoten bevorzugen, Oddify als Fallback
+            phq, paq, _ = find_pinnacle_odds(home, away, pinnacle)
+            hq = phq if phq > 1 else float(g.get('home_odds_decimal', 0) or 0)
+            aq = paq if paq > 1 else float(g.get('away_odds_decimal', 0) or 0)
             if hq<=1 and aq<=1: continue
             eh = calc_edge(hws, hq) if hq>1 else -99
             ea = calc_edge(aws, aq) if aq>1 else -99
@@ -213,6 +324,8 @@ def fetch_soccer():
     return data
 
 def proc_soccer(games):
+    # Pinnacle Quoten pro Liga einmalig holen
+    pinnacle_cache = {}
     out = []
     for g in games:
         try:
@@ -225,13 +338,41 @@ def proc_soccer(games):
             dp = float(g.get('draw_prob', 0) or 0)
             ap = float(g.get('away_prob', 0) or 0)
             if hp<=1: hp*=100; dp*=100; ap*=100
-            if hp>=ap and hp>=dp: team,ws = home,hp
-            elif ap>=hp and ap>=dp: team,ws = away,ap
-            else: team,ws = "Draw",dp
-            print(f"  👁  {name} [{league}]: H{hp:.0f}% D{dp:.0f}% A{ap:.0f}%")
-            out.append({"match":name,"team":team,"ws":round(ws,1),"odds":0,
-                "edge":0,"impl":round(ws,1),"score":0,"rec":"TRACK","stake":0,
-                "sport":sport_key,"league":league,"tracking_only":True,"is_pick":False})
+
+            # Pinnacle Quoten holen (gecacht pro Liga)
+            if sport_key not in pinnacle_cache:
+                pinnacle_cache[sport_key] = fetch_pinnacle_odds(sport_key)
+            pinnacle = pinnacle_cache[sport_key]
+            phq, paq, pdq = find_pinnacle_odds(home, away, pinnacle)
+
+            # Edge berechnen wenn Pinnacle Quoten vorhanden
+            if phq > 1 or paq > 1:
+                eh = calc_edge(hp, phq) if phq > 1 else -99
+                ea = calc_edge(ap, paq) if paq > 1 else -99
+                ed = calc_edge(dp, pdq) if pdq > 1 else -99
+                best_edge = max(eh, ea, ed)
+                if eh == best_edge:   team, ws, q, edge = home, hp, phq, eh
+                elif ea == best_edge: team, ws, q, edge = away, ap, paq, ea
+                else:                 team, ws, q, edge = "Draw", dp, pdq, ed
+                sc, km, rec = calc_score(edge, q, ws)
+                stake = calc_kelly(ws, q) * KELLY * km * BANKROLL if q > 1 else 0
+                impl = round(1/q*100, 1) if q > 0 else round(ws, 1)
+                tracking = rec in ["SKIP", "AUTO-SKIP"] or q <= 1
+                is_pick = rec == "WETTEN" and q > 1
+                icon = "🟢" if rec == "WETTEN" else "👁 "
+                print(f"  {icon} {name} [{league}]: {team} {ws:.0f}% q{q:.2f} e{edge:.1f}% → {rec}")
+            else:
+                # Kein Pinnacle — nur Leo WS% tracken
+                if hp>=ap and hp>=dp: team,ws = home,hp
+                elif ap>=hp and ap>=dp: team,ws = away,ap
+                else: team,ws = "Draw",dp
+                q, edge, sc, km, rec, stake, impl = 0, 0, 0, 0, "TRACK", 0, round(ws,1)
+                tracking, is_pick = True, False
+                print(f"  👁  {name} [{league}]: H{hp:.0f}% D{dp:.0f}% A{ap:.0f}% (kein Pinnacle)")
+
+            out.append({"match":name,"team":team,"ws":round(ws,1),"odds":round(q,3),
+                "edge":round(edge,2),"impl":impl,"score":sc,"rec":rec,"stake":round(stake,2),
+                "sport":sport_key,"league":league,"tracking_only":tracking,"is_pick":is_pick})
         except Exception as e:
             print(f"  ❌ Soccer parse error: {e}")
     return out
@@ -298,6 +439,13 @@ def proc_tennis(games_tuple):
             # Quoten berechnen falls nicht vorhanden
             if q1 <= 1 and ws1 > 0: q1 = round(100/ws1, 2)
             if q2 <= 1 and ws2 > 0: q2 = round(100/ws2, 2)
+
+            # Pinnacle Quoten bevorzugen
+            if not hasattr(proc_tennis, '_pinnacle'):
+                proc_tennis._pinnacle = fetch_pinnacle_odds("tennis")
+            pq1, pq2, _ = find_pinnacle_odds(p1, p2, proc_tennis._pinnacle)
+            if pq1 > 1: q1 = pq1
+            if pq2 > 1: q2 = pq2
 
             e1 = calc_edge(ws1,q1) if q1>1 else -99
             e2 = calc_edge(ws2,q2) if q2>1 else -99
