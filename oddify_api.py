@@ -331,10 +331,13 @@ def proc_nba(games):
             name = f"{home} vs {away}"
             hws  = float(g.get('team_a_win_prob', 0) or 0) * 100
             aws  = float(g.get('team_b_win_prob', 0) or 0) * 100
-            # Pinnacle Quoten bevorzugen, Oddify als Fallback
-            phq, paq, _ = find_pinnacle_odds(home, away, pinnacle)
+            # Abkürzungen zu vollen Namen konvertieren für Pinnacle matching
+            home_full = NBA_NAMES.get(home.upper(), home)
+            away_full = NBA_NAMES.get(away.upper(), away)
+            phq, paq, _ = find_pinnacle_odds(home_full, away_full, pinnacle)
             hq = phq if phq > 1 else float(g.get('home_odds_decimal', 0) or 0)
             aq = paq if paq > 1 else float(g.get('away_odds_decimal', 0) or 0)
+            if phq > 1: print(f"    📊 Pinnacle: {home_full} {phq:.2f} | {away_full} {paq:.2f}")
             if hq<=1 and aq<=1: continue
             eh = calc_edge(hws, hq) if hq>1 else -99
             ea = calc_edge(aws, aq) if aq>1 else -99
