@@ -102,31 +102,76 @@ def fetch_pinnacle_odds(sport_key):
         print(f"  ⚠️  Odds API Fehler ({api_sport}): {e}")
         return {}
 
+# NBA Abkürzung → Vollname Mapping
+NBA_NAMES = {
+    'ATL':'atlanta hawks','BOS':'boston celtics','BKN':'brooklyn nets',
+    'CHA':'charlotte hornets','CHI':'chicago bulls','CLE':'cleveland cavaliers',
+    'DAL':'dallas mavericks','DEN':'denver nuggets','DET':'detroit pistons',
+    'GSW':'golden state warriors','HOU':'houston rockets','IND':'indiana pacers',
+    'LAC':'los angeles clippers','LAL':'los angeles lakers','MEM':'memphis grizzlies',
+    'MIA':'miami heat','MIL':'milwaukee bucks','MIN':'minnesota timberwolves',
+    'NOP':'new orleans pelicans','NYK':'new york knicks','OKC':'oklahoma city thunder',
+    'ORL':'orlando magic','PHI':'philadelphia 76ers','PHX':'phoenix suns',
+    'POR':'portland trail blazers','SAC':'sacramento kings','SAS':'san antonio spurs',
+    'TOR':'toronto raptors','UTA':'utah jazz','WAS':'washington wizards',
+    # Soccer shortcuts
+    'BVB':'borussia dortmund','FCB':'fc barcelona','RMA':'real madrid',
+}
+
+def normalize_name(name):
+    """Normalisiert Teamnamen für Matching"""
+    n = name.lower().strip()
+    # NBA Abkürzung aufläsen
+    if n.upper() in NBA_NAMES:
+        n = NBA_NAMES[n.upper()]
+    # Häufige Abkürzungen
+    n = n.replace('fc ', '').replace(' fc', '').replace(' cf', '')
+    n = n.replace('afc ', '').replace(' afc', '')
+    n = n.replace('.', '').replace('-', ' ')
+    return n
+
 def find_pinnacle_odds(home_team, away_team, odds_map):
-    """Sucht Pinnacle Quote für zwei Teams — fuzzy matching"""
+    """Sucht Pinnacle Quote — mit NBA Name Mapping"""
     if not odds_map:
         return 0, 0, 0
-    
-    home_l = home_team.lower()
-    away_l = away_team.lower()
-    
-    # Exakte Match
-    key = f"{home_l}|{away_l}"
-    if key in odds_map:
-        d = odds_map[key]
-        return d['home'], d['away'], d.get('draw', 0)
-    
-    # Fuzzy: suche nach Teilstrings
+
+    home_n = normalize_name(home_team)
+    away_n = normalize_name(away_team)
+
+    best_match = None
+    best_score = 0
+
     for k, v in odds_map.items():
         h, a = k.split('|')
-        # NBA Abkürzungen (z.B. "OKC" in "Oklahoma City Thunder")
-        if (home_l in h or h in home_l or home_l[:3] in h) and            (away_l in a or a in away_l or away_l[:3] in a):
+        h_n = normalize_name(h)
+        a_n = normalize_name(a)
+
+        # Exakter Match
+        if home_n == h_n and away_n == a_n:
             return v['home'], v['away'], v.get('draw', 0)
-        # Umgekehrt (home/away manchmal vertauscht)
-        if (home_l in a or a in home_l) and (away_l in h or h in away_l):
+        if home_n == a_n and away_n == h_n:
             return v['away'], v['home'], v.get('draw', 0)
-    
-    return 0, 0, 0
+
+        # Partial match — score berechnen
+        score = 0
+        if home_n in h_n or h_n in home_n: score += 2
+        if away_n in a_n or a_n in away_n: score += 2
+        if home_n[:5] in h_n: score += 1
+        if away_n[:5] in a_n: score += 1
+
+        if score >= 4 and score > best_score:
+            best_score = score
+            best_match = (v['home'], v['away'], v.get('draw', 0))
+
+        # Reversed
+        score2 = 0
+        if home_n in a_n or a_n in home_n: score2 += 2
+        if away_n in h_n or h_n in away_n: score2 += 2
+        if score2 >= 4 and score2 > best_score:
+            best_score = score2
+            best_match = (v['away'], v['home'], v.get('draw', 0))
+
+    return best_match if best_match else (0, 0, 0)
 
 # ══════════════════════════════════════════════════════
 #  LOGIN — holt JWT Token und User ID
