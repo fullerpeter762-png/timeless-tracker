@@ -37,6 +37,9 @@ ODDS_SPORTS = {
     "football_serie_a":           "soccer_italy_serie_a",
     "football_laliga":            "soccer_spain_la_liga",
     "football_ligue1":            "soccer_france_ligue_one",
+    "football_3liga":             "soccer_germany_liga3",
+    "football_eredivisie":        "soccer_netherlands_eredivisie",
+    "football":                   "soccer_epl",
     "tennis":                     "tennis_atp_french_open",  # wird dynamisch ersetzt
 }
 
@@ -44,7 +47,10 @@ _odds_cache = {}  # Cache damit wir nicht zu viele API Requests machen
 
 def fetch_pinnacle_odds(sport_key):
     """Holt Pinnacle Quoten für einen Sport"""
-    api_sport = ODDS_SPORTS.get(sport_key, "basketball_nba")
+    api_sport = ODDS_SPORTS.get(sport_key)
+    if not api_sport:
+        print(f"  ℹ️  Kein Odds API Mapping für {sport_key}")
+        return {}
     
     if api_sport in _odds_cache:
         return _odds_cache[api_sport]
@@ -124,11 +130,30 @@ def normalize_name(name):
     # NBA Abkürzung aufläsen
     if n.upper() in NBA_NAMES:
         n = NBA_NAMES[n.upper()]
-    # Häufige Abkürzungen
+    # Fußball Team-Name Cleanup
     n = n.replace('fc ', '').replace(' fc', '').replace(' cf', '')
-    n = n.replace('afc ', '').replace(' afc', '')
-    n = n.replace('.', '').replace('-', ' ')
-    return n
+    n = n.replace('afc ', '').replace(' afc', '').replace('sc ', '')
+    n = n.replace('sv ', '').replace(' sv', '').replace('vfl ', '')
+    n = n.replace('fsv ', '').replace('tsg ', '').replace('rb ', '')
+    n = n.replace('1. ', '').replace('vfb ', '').replace('bsc ', '')
+    n = n.replace('.', '').replace('-', ' ').replace('ü','ue')
+    n = n.replace('ä','ae').replace('ö','oe').replace('ß','ss')
+    # Common name mappings
+    name_map = {
+        'bvb': 'borussia dortmund',
+        'man united': 'manchester united',
+        'man city': 'manchester city',
+        'atletico madrid': 'atletico madrid',
+        'atletico': 'atletico madrid',
+        'inter': 'inter milan',
+        'inter milan': 'inter milan',
+        'psg': 'paris saint germain',
+        'paris saint germain': 'paris saint germain',
+        'as monaco': 'monaco',
+        'as roma': 'roma',
+    }
+    n = name_map.get(n, n)
+    return n.strip()
 
 def find_pinnacle_odds(home_team, away_team, odds_map):
     """Sucht Pinnacle Quote — mit NBA Name Mapping"""
@@ -253,6 +278,9 @@ def normalize_league(l):
     if 'serie a' in l:    return 'football_serie_a'
     if 'laliga' in l or 'la liga' in l: return 'football_laliga'
     if 'ligue' in l:      return 'football_ligue1'
+    if '3. liga' in l or 'liga 3' in l or 'dritte' in l: return 'football_3liga'
+    if 'eredivisie' in l: return 'football_eredivisie'
+    if 'segunda' in l or 'segunda division' in l: return 'football_laliga'
     return 'football'
 
 # ══════════════════════════════════════════════════════
@@ -395,6 +423,7 @@ def proc_soccer(games):
 
             # Edge berechnen wenn Pinnacle Quoten vorhanden
             if phq > 1 or paq > 1:
+                print(f"    📊 Pinnacle: {home} {phq:.2f} | {away} {paq:.2f}")
                 eh = calc_edge(hp, phq) if phq > 1 else -99
                 ea = calc_edge(ap, paq) if paq > 1 else -99
                 ed = calc_edge(dp, pdq) if pdq > 1 else -99
