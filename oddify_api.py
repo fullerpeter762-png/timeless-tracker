@@ -27,93 +27,109 @@ KELLY    = 0.125
 ODDS_API_KEY = "cea8666183e600c00986faa203b656b2"
 
 # Sport-Keys für The Odds API
-ODDS_SPORTS = {
-    "nba":                        "basketball_nba",
-    "football_bundesliga":        "soccer_germany_bundesliga",
-    "football_2bundesliga":       "soccer_germany_bundesliga2",
-    "football_premier_league":    "soccer_epl",
-    "football_champions_league":  "soccer_uefa_champs_league",
-    "football_europa_league":     "soccer_uefa_europa_league",
-    "football_serie_a":           "soccer_italy_serie_a",
-    "football_laliga":            "soccer_spain_la_liga",
-    "football_ligue1":            "soccer_france_ligue_one",
-    "football_3liga":             "soccer_germany_liga3",
-    "football_eredivisie":        "soccer_netherlands_eredivisie",
-    "football":                   "soccer_epl",
-    "tennis":                     "tennis_atp_french_open",  # wird dynamisch ersetzt
-}
+SOCCER_API_LEAGUES = [
+    "soccer_germany_bundesliga",
+    "soccer_germany_bundesliga2",
+    "soccer_epl",
+    "soccer_italy_serie_a",
+    "soccer_spain_la_liga",
+    "soccer_france_ligue_one",
+    "soccer_netherlands_eredivisie",
+    "soccer_uefa_champs_league",
+    "soccer_uefa_europa_league",
+]
 
-_odds_cache = {}  # Cache damit wir nicht zu viele API Requests machen
+_odds_cache = {}       # Cache für NBA/Tennis
+_soccer_odds_cache = None  # Einmal für alle Fußball-Ligen
+
+def _parse_odds_response(games_json):
+    """Parst Odds API Response zu odds_map"""
+    odds_map = {}
+    for game in games_json:
+        home = game.get("home_team", "")
+        away = game.get("away_team", "")
+        home_odds = away_odds = draw_odds = 0
+        for bm in game.get("bookmakers", []):
+            for mk in bm.get("markets", []):
+                if mk["key"] == "h2h":
+                    for oc in mk["outcomes"]:
+                        if oc["name"] == home:
+                            home_odds = max(home_odds, oc["price"])
+                        elif oc["name"] == away:
+                            away_odds = max(away_odds, oc["price"])
+                        elif oc["name"] == "Draw":
+                            draw_odds = max(draw_odds, oc["price"])
+        key = f"{home}|{away}".lower()
+        odds_map[key] = {"home": home_odds, "away": away_odds, "draw": draw_odds,
+                         "home_team": home, "away_team": away}
+    return odds_map
+
+def fetch_all_soccer_odds():
+    """Holt alle Fußball-Ligen — jede Liga = 1 Request, aber alles in einem gemeinsamen Cache"""
+    global _soccer_odds_cache
+    if _soccer_odds_cache is not None:
+        return _soccer_odds_cache
+    all_odds = {}
+    for league in SOCCER_API_LEAGUES:
+        try:
+            r = requests.get(
+                f"https://api.the-odds-api.com/v4/sports/{league}/odds/",
+                params={"apiKey": ODDS_API_KEY, "regions": "eu",
+                        "markets": "h2h", "oddsFormat": "decimal",
+                        "bookmakers": "pinnacle"},
+                timeout=15
+            )
+            remaining = r.headers.get("x-requests-remaining", "?")
+            if r.status_code == 200:
+                parsed = _parse_odds_response(r.json())
+                all_odds.update(parsed)
+                print(f"  📊 {league}: {len(parsed)} Spiele | {remaining} übrig")
+            elif r.status_code == 422:
+                print(f"  ℹ️  {league}: keine Spiele gerade")
+            else:
+                print(f"  ⚠️  {league}: {r.status_code} — {r.text[:100]}")
+                if r.status_code == 401 or r.status_code == 429:
+                    print("  ❌ API Limit oder Key-Problem — abbruch")
+                    break
+        except Exception as e:
+            print(f"  ⚠️  {league}: {e}")
+    print(f"  ✅ Fußball gesamt: {len(all_odds)} Pinnacle Spiele")
+    if all_odds:
+        print(f"  🔍 Beispiele: {list(all_odds.keys())[:3]}")
+    _soccer_odds_cache = all_odds
+    return all_odds
 
 def fetch_pinnacle_odds(sport_key):
-    """Holt Pinnacle Quoten für einen Sport"""
-    api_sport = ODDS_SPORTS.get(sport_key)
-    if not api_sport:
+    """Holt Pinnacle Quoten"""
+    if sport_key.startswith("football"):
+        return fetch_all_soccer_odds()
+    if sport_key == "nba":
+        api_sport = "basketball_nba"
+    else:
         print(f"  ℹ️  Kein Odds API Mapping für '{sport_key}'")
         return {}
-
     if api_sport in _odds_cache:
         return _odds_cache[api_sport]
-
     print(f"  🌐 Odds API: {api_sport}...")
     try:
         r = requests.get(
             f"https://api.the-odds-api.com/v4/sports/{api_sport}/odds/",
-            params={
-                "apiKey": ODDS_API_KEY,
-                "regions": "eu",
-                "markets": "h2h",
-                "oddsFormat": "decimal",
-                "bookmakers": "pinnacle"
-            },
+            params={"apiKey": ODDS_API_KEY, "regions": "eu",
+                    "markets": "h2h", "oddsFormat": "decimal",
+                    "bookmakers": "pinnacle"},
             timeout=15
         )
-        print(f"  → Status: {r.status_code}")
-        remaining = r.headers.get('x-requests-remaining', '?')
+        remaining = r.headers.get("x-requests-remaining", "?")
+        print(f"  → Status: {r.status_code} | {remaining} Requests übrig")
         if r.status_code != 200:
             print(f"  ❌ Odds API Fehler: {r.text[:200]}")
             return {}
-        
-        if r.status_code != 200:
-            print(f"  ⚠️  Odds API {r.status_code}: {r.text[:100]}")
-            return {}
-        
-        odds_map = {}
-        for game in r.json():
-            home = game.get('home_team', '')
-            away = game.get('away_team', '')
-            home_odds = 0
-            away_odds = 0
-            draw_odds = 0
-            
-            for bm in game.get('bookmakers', []):
-                for mk in bm.get('markets', []):
-                    if mk['key'] == 'h2h':
-                        for oc in mk['outcomes']:
-                            if oc['name'] == home:
-                                home_odds = max(home_odds, oc['price'])
-                            elif oc['name'] == away:
-                                away_odds = max(away_odds, oc['price'])
-                            elif oc['name'] == 'Draw':
-                                draw_odds = max(draw_odds, oc['price'])
-            
-            # Speichere unter Teamname (lowercase für matching)
-            key = f"{home}|{away}".lower()
-            odds_map[key] = {
-                'home': home_odds, 'away': away_odds, 'draw': draw_odds,
-                'home_team': home, 'away_team': away
-            }
-        
-        print(f"  📊 Pinnacle {api_sport}: {len(odds_map)} Spiele | {remaining} Requests übrig")
-        if len(odds_map) == 0:
-            print(f"  ⚠️  Pinnacle hat KEINE Spiele für {api_sport} — evtl. nicht verfügbar oder zu früh")
-        else:
-            # Debug: zeige erste 3 Spiele für Matching-Check
-            sample = list(odds_map.keys())[:3]
-            print(f"  🔍 Pinnacle Beispiele: {sample}")
+        odds_map = _parse_odds_response(r.json())
+        print(f"  📊 Pinnacle {api_sport}: {len(odds_map)} Spiele")
+        if odds_map:
+            print(f"  🔍 Beispiele: {list(odds_map.keys())[:2]}")
         _odds_cache[api_sport] = odds_map
         return odds_map
-        
     except Exception as e:
         print(f"  ⚠️  Odds API Fehler ({api_sport}): {e}")
         return {}
@@ -290,7 +306,7 @@ def normalize_league(l):
     if 'ligue' in l:      return 'football_ligue1'
     if '3. liga' in l or 'liga 3' in l or 'dritte' in l: return 'football_3liga'
     if 'eredivisie' in l: return 'football_eredivisie'
-    if 'segunda' in l:    return 'football_segunda'   # Eigene Kategorie, kein Pinnacle erwartet
+    if 'segunda' in l or 'segunda division' in l: return 'football_laliga'
     return 'football'
 
 # ══════════════════════════════════════════════════════
@@ -398,26 +414,15 @@ def proc_nba(games):
 #  FUSSBALL
 # ══════════════════════════════════════════════════════
 def fetch_soccer():
-    from datetime import timedelta
-    now = datetime.now(timezone.utc)
-    cutoff = (now + timedelta(hours=48)).isoformat()
-    now_iso = now.isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     r = requests.get(
         f"{ODDIFY_URL}/rest/v1/soccer_odds",
-        params={
-            "select": "id,league,home_team,away_team,commence_time,home_prob,draw_prob,away_prob",
-            "commence_time": f"gt.{now_iso}",
-            "and": f"(commence_time.lt.{cutoff})",
-            "order": "commence_time.asc",
-            "limit": "80"
-        },
+        params={"select": "id,league,home_team,away_team,commence_time,home_prob,draw_prob,away_prob",
+                "commence_time": f"gt.{now}", "order": "commence_time.asc", "limit": "60"},
         headers=oddify_h(), timeout=15
     )
-    # Fallback: filter manuell wenn Supabase range nicht klappt
     data = r.json() if r.status_code==200 else []
-    cutoff_dt = now + timedelta(hours=48)
-    data = [g for g in data if g.get('commence_time','') < cutoff_dt.isoformat()]
-    print(f"  Fußball: {len(data)} Spiele (nächste 48h)")
+    print(f"  Fußball: {len(data)} Spiele")
     return data
 
 def proc_soccer(games):
@@ -466,8 +471,7 @@ def proc_soccer(games):
                 else: team,ws = "Draw",dp
                 q, edge, sc, km, rec, stake, impl = 0, 0, 0, 0, "TRACK", 0, round(ws,1)
                 tracking, is_pick = True, False
-                no_pin_reason = "kein Mapping" if not ODDS_SPORTS.get(sport_key) else "kein Match"
-                print(f"  👁  {name} [{league}]: H{hp:.0f}% D{dp:.0f}% A{ap:.0f}% ({no_pin_reason})")
+                print(f"  👁  {name} [{league}]: H{hp:.0f}% D{dp:.0f}% A{ap:.0f}% (kein Pinnacle)")
 
             out.append({"match":name,"team":team,"ws":round(ws,1),"odds":round(q,3),
                 "edge":round(edge,2),"impl":impl,"score":sc,"rec":rec,"stake":round(stake,2),
