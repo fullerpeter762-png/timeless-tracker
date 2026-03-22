@@ -24,7 +24,7 @@ KELLY    = 0.125
 # ══════════════════════════════════════════════════════
 #  THE ODDS API — Pinnacle Quoten
 # ══════════════════════════════════════════════════════
-ODDS_API_KEY = "cea8666183e600c00986faa203b656b2"
+ODDS_API_KEY = "07f70ed8f4c796f5bb59b1a102fa0e01"
 
 # Sport-Keys für The Odds API
 SOCCER_API_LEAGUES = [
@@ -39,11 +39,10 @@ SOCCER_API_LEAGUES = [
     "soccer_uefa_europa_league",
 ]
 
-_odds_cache = {}       # Cache für NBA/Tennis
-_soccer_odds_cache = None  # Einmal für alle Fußball-Ligen
+_odds_cache = {}
+_soccer_odds_cache = None
 
 def _parse_odds_response(games_json):
-    """Parst Odds API Response zu odds_map"""
     odds_map = {}
     for game in games_json:
         home = game.get("home_team", "")
@@ -65,7 +64,7 @@ def _parse_odds_response(games_json):
     return odds_map
 
 def fetch_all_soccer_odds():
-    """Holt alle Fußball-Ligen — jede Liga = 1 Request, aber alles in einem gemeinsamen Cache"""
+    """Holt alle Fußball-Ligen — gemeinsamer Cache, spart Requests"""
     global _soccer_odds_cache
     if _soccer_odds_cache is not None:
         return _soccer_odds_cache
@@ -88,8 +87,8 @@ def fetch_all_soccer_odds():
                 print(f"  ℹ️  {league}: keine Spiele gerade")
             else:
                 print(f"  ⚠️  {league}: {r.status_code} — {r.text[:100]}")
-                if r.status_code == 401 or r.status_code == 429:
-                    print("  ❌ API Limit oder Key-Problem — abbruch")
+                if r.status_code in [401, 429]:
+                    print("  ❌ API Limit oder Key-Problem — Abbruch")
                     break
         except Exception as e:
             print(f"  ⚠️  {league}: {e}")
@@ -100,7 +99,6 @@ def fetch_all_soccer_odds():
     return all_odds
 
 def fetch_pinnacle_odds(sport_key):
-    """Holt Pinnacle Quoten"""
     if sport_key.startswith("football"):
         return fetch_all_soccer_odds()
     if sport_key == "nba":
@@ -306,7 +304,7 @@ def normalize_league(l):
     if 'ligue' in l:      return 'football_ligue1'
     if '3. liga' in l or 'liga 3' in l or 'dritte' in l: return 'football_3liga'
     if 'eredivisie' in l: return 'football_eredivisie'
-    if 'segunda' in l or 'segunda division' in l: return 'football_laliga'
+    if 'segunda' in l:    return 'football_segunda'   # kein Pinnacle erwartet
     return 'football'
 
 # ══════════════════════════════════════════════════════
