@@ -328,14 +328,15 @@ def already_today(token, match, sport):
         return False
 
 def save_bet(token, user_id, game):
-    today   = datetime.now().strftime("%d.%m.%Y")
+    # Spieldatum aus den Daten — NICHT das Scrape-Datum
+    game_date = game.get('game_date') or datetime.now().strftime("%d.%m.%Y")
     sport_db = 'nba' if game['sport']=='nba' else 'tennis' if game['sport']=='tennis' else 'football'
 
     payload = {
         "user_id":       user_id,
         "match":         game['match'],
         "betteam":       game['team'],
-        "date":          today,
+        "date":          game_date,
         "stake":         game['stake'],
         "odds":          game['odds'],
         "edge":          game['edge'],
@@ -376,7 +377,6 @@ def fetch_nba():
     return data
 
 def proc_nba(games):
-    # Pinnacle Quoten einmalig holen
     pinnacle = fetch_pinnacle_odds("nba")
     out = []
     for g in games:
@@ -384,6 +384,15 @@ def proc_nba(games):
             home = g.get('team_a_abbr') or g.get('team_a_name', '?')
             away = g.get('team_b_abbr') or g.get('team_b_name', '?')
             name = f"{home} vs {away}"
+
+            # Spieldatum aus game_key: "2026-03-21_OKC_WAS" → "21.03.2026"
+            game_key = g.get('game_key', '')
+            try:
+                date_part = game_key.split('_')[0]  # "2026-03-21"
+                dt = datetime.strptime(date_part, "%Y-%m-%d")
+                game_date = dt.strftime("%d.%m.%Y")
+            except Exception:
+                game_date = datetime.now().strftime("%d.%m.%Y")
             hws  = float(g.get('team_a_win_prob', 0) or 0) * 100
             aws  = float(g.get('team_b_win_prob', 0) or 0) * 100
             # Abkürzungen zu vollen Namen konvertieren für Pinnacle matching
@@ -405,6 +414,7 @@ def proc_nba(games):
             out.append({"match":name,"team":team,"ws":round(ws,1),"odds":round(q,3),
                 "edge":round(ep,2),"impl":round(1/q*100,1) if q>0 else 0,
                 "score":sc,"rec":rec,"stake":round(st,2),"sport":"nba","league":"NBA",
+                "game_date": game_date,
                 "tracking_only":rec in["SKIP","AUTO-SKIP"] or q<=1,
                 "is_pick":rec=="WETTEN" and q>1})
         except Exception as e:
@@ -437,6 +447,14 @@ def proc_soccer(games):
             name   = f"{home} vs {away}"
             league = g.get('league', '')
             sport_key = normalize_league(league)
+
+            # Spieldatum aus commence_time: "2026-03-22T15:00:00+00:00" → "22.03.2026"
+            try:
+                ct = g.get('commence_time', '')
+                dt = datetime.fromisoformat(ct.replace('Z', '+00:00'))
+                game_date = dt.strftime("%d.%m.%Y")
+            except Exception:
+                game_date = datetime.now().strftime("%d.%m.%Y")
             hp = float(g.get('home_prob', 0) or 0)
             dp = float(g.get('draw_prob', 0) or 0)
             ap = float(g.get('away_prob', 0) or 0)
@@ -476,7 +494,8 @@ def proc_soccer(games):
 
             out.append({"match":name,"team":team,"ws":round(ws,1),"odds":round(q,3),
                 "edge":round(edge,2),"impl":impl,"score":sc,"rec":rec,"stake":round(stake,2),
-                "sport":sport_key,"league":league,"tracking_only":tracking,"is_pick":is_pick})
+                "sport":sport_key,"league":league,"game_date":game_date,
+                "tracking_only":tracking,"is_pick":is_pick})
         except Exception as e:
             print(f"  ❌ Soccer parse error: {e}")
     return out
@@ -512,14 +531,10 @@ def proc_tennis(games_tuple):
     out = []
     for g in games:
         try:
-            # tennis_predictions Felder ermitteln
             if source == "predictions":
-                # Zeige erstes Entry komplett beim ersten Mal
-                # Korrekte Felder aus tennis_predictions
-                # Echte Feldnamen aus tennis_predictions:
                 p1 = g.get('p1_name', 'P1')
                 p2 = g.get('p2_name', 'P2')
-                ws1 = float(g.get('p1_win_prob', 0) or 0) * 100  # Dezimal → Prozent
+                ws1 = float(g.get('p1_win_prob', 0) or 0) * 100
                 ws2 = float(g.get('p2_win_prob', 0) or 0) * 100
                 q1 = float(g.get('best_home_odds') or g.get('home_odds') or 0)
                 q2 = float(g.get('best_away_odds') or g.get('away_odds') or 0)
@@ -529,6 +544,14 @@ def proc_tennis(games_tuple):
                 q1 = float(g.get('best_home_odds', 0) or 0)
                 q2 = float(g.get('best_away_odds', 0) or 0)
                 ws1 = ws2 = 0
+
+            # Spieldatum aus commence_time oder updated_at
+            try:
+                ct = g.get('commence_time') or g.get('updated_at') or ''
+                dt = datetime.fromisoformat(ct.replace('Z', '+00:00'))
+                game_date = dt.strftime("%d.%m.%Y")
+            except Exception:
+                game_date = datetime.now().strftime("%d.%m.%Y")
 
             name = f"{p1} vs {p2}"
             if p1 == 'P1' and p2 == 'P2': continue  # Kein gültiger Eintrag
@@ -562,6 +585,7 @@ def proc_tennis(games_tuple):
             out.append({"match":name,"team":player,"ws":round(ws,1),"odds":round(q,3),
                 "edge":round(ep,2),"impl":round(1/q*100,1) if q>0 else 0,
                 "score":sc,"rec":rec,"stake":round(st,2),"sport":"tennis","league":"Tennis",
+                "game_date": game_date,
                 "tracking_only":rec in["SKIP","AUTO-SKIP"] or q<=1,
                 "is_pick":rec=="WETTEN" and q>1})
         except Exception as e:
