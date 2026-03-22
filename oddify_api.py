@@ -66,9 +66,12 @@ def _parse_odds_response(games_json):
 def fetch_all_soccer_odds():
     """Holt alle Fußball-Ligen — gemeinsamer Cache, spart Requests"""
     global _soccer_odds_cache
+    print(f"  🌐 fetch_all_soccer_odds gestartet (cache={_soccer_odds_cache is not None})", flush=True)
     if _soccer_odds_cache is not None:
+        print(f"  ♻️  Cache hit: {len(_soccer_odds_cache)} Spiele", flush=True)
         return _soccer_odds_cache
     all_odds = {}
+    print(f"  🔄 Starte Odds API Calls für {len(SOCCER_API_LEAGUES)} Ligen...", flush=True)
     for league in SOCCER_API_LEAGUES:
         try:
             r = requests.get(
