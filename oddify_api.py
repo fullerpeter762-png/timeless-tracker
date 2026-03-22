@@ -105,6 +105,12 @@ def fetch_pinnacle_odds(sport_key):
             }
         
         print(f"  📊 Pinnacle {api_sport}: {len(odds_map)} Spiele | {remaining} Requests übrig")
+        if len(odds_map) == 0:
+            print(f"  ⚠️  Pinnacle hat KEINE Spiele für {api_sport} — evtl. nicht verfügbar oder zu früh")
+        else:
+            # Debug: zeige erste 3 Spiele für Matching-Check
+            sample = list(odds_map.keys())[:3]
+            print(f"  🔍 Pinnacle Beispiele: {sample}")
         _odds_cache[api_sport] = odds_map
         return odds_map
         
@@ -284,7 +290,7 @@ def normalize_league(l):
     if 'ligue' in l:      return 'football_ligue1'
     if '3. liga' in l or 'liga 3' in l or 'dritte' in l: return 'football_3liga'
     if 'eredivisie' in l: return 'football_eredivisie'
-    if 'segunda' in l or 'segunda division' in l: return 'football_laliga'
+    if 'segunda' in l:    return 'football_segunda'   # Eigene Kategorie, kein Pinnacle erwartet
     return 'football'
 
 # ══════════════════════════════════════════════════════
@@ -392,15 +398,26 @@ def proc_nba(games):
 #  FUSSBALL
 # ══════════════════════════════════════════════════════
 def fetch_soccer():
-    now = datetime.now(timezone.utc).isoformat()
+    from datetime import timedelta
+    now = datetime.now(timezone.utc)
+    cutoff = (now + timedelta(hours=48)).isoformat()
+    now_iso = now.isoformat()
     r = requests.get(
         f"{ODDIFY_URL}/rest/v1/soccer_odds",
-        params={"select": "id,league,home_team,away_team,commence_time,home_prob,draw_prob,away_prob",
-                "commence_time": f"gt.{now}", "order": "commence_time.asc", "limit": "60"},
+        params={
+            "select": "id,league,home_team,away_team,commence_time,home_prob,draw_prob,away_prob",
+            "commence_time": f"gt.{now_iso}",
+            "and": f"(commence_time.lt.{cutoff})",
+            "order": "commence_time.asc",
+            "limit": "80"
+        },
         headers=oddify_h(), timeout=15
     )
+    # Fallback: filter manuell wenn Supabase range nicht klappt
     data = r.json() if r.status_code==200 else []
-    print(f"  Fußball: {len(data)} Spiele")
+    cutoff_dt = now + timedelta(hours=48)
+    data = [g for g in data if g.get('commence_time','') < cutoff_dt.isoformat()]
+    print(f"  Fußball: {len(data)} Spiele (nächste 48h)")
     return data
 
 def proc_soccer(games):
@@ -449,7 +466,8 @@ def proc_soccer(games):
                 else: team,ws = "Draw",dp
                 q, edge, sc, km, rec, stake, impl = 0, 0, 0, 0, "TRACK", 0, round(ws,1)
                 tracking, is_pick = True, False
-                print(f"  👁  {name} [{league}]: H{hp:.0f}% D{dp:.0f}% A{ap:.0f}% (kein Pinnacle)")
+                no_pin_reason = "kein Mapping" if not ODDS_SPORTS.get(sport_key) else "kein Match"
+                print(f"  👁  {name} [{league}]: H{hp:.0f}% D{dp:.0f}% A{ap:.0f}% ({no_pin_reason})")
 
             out.append({"match":name,"team":team,"ws":round(ws,1),"odds":round(q,3),
                 "edge":round(edge,2),"impl":impl,"score":sc,"rec":rec,"stake":round(stake,2),
