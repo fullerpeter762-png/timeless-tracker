@@ -345,7 +345,11 @@ def save_bet(token, user_id, game):
         "impl":          game['impl'],
         "sport":         sport_db,
         "result":        "open",
-        "note":          f"Auto-Tracker | {game['league']} | {game['rec']}",
+        "note":          (
+            f"Auto-Tracker | {game['league']} | {game['rec']} | {game['ws_home']}|{game['ws_draw']}|{game['ws_away']}"
+            if game.get('ws_home') is not None and game.get('sport','').startswith('football')
+            else f"Auto-Tracker | {game['league']} | {game['rec']}"
+        ),
         "tracking_only": game['tracking_only'],
         "is_pick":       game['is_pick'],
         "created_at":    datetime.now().isoformat()
@@ -495,7 +499,8 @@ def proc_soccer(games):
             out.append({"match":name,"team":team,"ws":round(ws,1),"odds":round(q,3),
                 "edge":round(edge,2),"impl":impl,"score":sc,"rec":rec,"stake":round(stake,2),
                 "sport":sport_key,"league":league,"game_date":game_date,
-                "tracking_only":tracking,"is_pick":is_pick})
+                "tracking_only":tracking,"is_pick":is_pick,
+                "ws_home":round(hp,1),"ws_draw":round(dp,1),"ws_away":round(ap,1)})
         except Exception as e:
             print(f"  ❌ Soccer parse error: {e}")
     return out
