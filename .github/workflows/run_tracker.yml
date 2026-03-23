@@ -13,3 +13,20 @@ jobs:
           python-version: '3.11'
       - run: pip install requests
       - run: python oddify_api.py
+        env:
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
+
+  results:
+    runs-on: ubuntu-latest
+    needs: scrape
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install requests
+      - run: python auto_results.py
+        env:
+          BALLDONTLIE_KEY: ${{ secrets.BALLDONTLIE_KEY }}
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          SUPABASE_PASSWORD: ${{ secrets.SUPABASE_PASSWORD }}
