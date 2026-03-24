@@ -27,6 +27,7 @@ KELLY    = 0.125
 ODDS_API_KEY = "07f70ed8f4c796f5bb59b1a102fa0e01"
 
 # Sport-Keys für The Odds API
+# Pinnacle-Ligen (große Ligen — hohe Liquidität)
 SOCCER_API_LEAGUES = [
     "soccer_germany_bundesliga",
     "soccer_germany_bundesliga2",
@@ -39,8 +40,22 @@ SOCCER_API_LEAGUES = [
     "soccer_uefa_europa_league",
 ]
 
+# Fallback-Ligen (kein Pinnacle → beste verfügbare Bookie-Quote)
+SOCCER_FALLBACK_LEAGUES = [
+    "soccer_england_championship",
+    "soccer_england_league1",
+    "soccer_england_league2",
+    "soccer_spain_segunda_division",
+    "soccer_france_ligue_two",
+    "soccer_germany_liga3",
+    "soccer_italy_serie_b",
+    "soccer_portugal_primeira_liga",
+    "soccer_turkey_super_league",
+]
+
 _odds_cache = {}
 _soccer_odds_cache = None
+_soccer_fallback_cache = None  # Fallback-Quoten für kleine Ligen
 
 def _parse_odds_response(games_json):
     odds_map = {}
@@ -99,6 +114,40 @@ def fetch_all_soccer_odds():
     if all_odds:
         print(f"  🔍 Beispiele: {list(all_odds.keys())[:3]}")
     _soccer_odds_cache = all_odds
+    return all_odds
+
+def fetch_all_soccer_fallback_odds():
+    """Holt Quoten fuer kleine Ligen (kein Pinnacle) — beste verfuegbare Bookie-Quote."""
+    global _soccer_fallback_cache
+    if _soccer_fallback_cache is not None:
+        print(f"  ♻️  Fallback-Cache hit: {len(_soccer_fallback_cache)} Spiele")
+        return _soccer_fallback_cache
+    all_odds = {}
+    print(f"  🔄 Fallback Odds fuer {len(SOCCER_FALLBACK_LEAGUES)} kleine Ligen...", flush=True)
+    for league in SOCCER_FALLBACK_LEAGUES:
+        try:
+            r = requests.get(
+                f"https://api.the-odds-api.com/v4/sports/{league}/odds/",
+                params={"apiKey": ODDS_API_KEY, "regions": "eu",
+                        "markets": "h2h", "oddsFormat": "decimal"},
+                timeout=15
+            )
+            remaining = r.headers.get("x-requests-remaining", "?")
+            if r.status_code == 200:
+                parsed = _parse_odds_response(r.json())
+                all_odds.update(parsed)
+                print(f"  📊 {league}: {len(parsed)} Spiele | {remaining} übrig")
+            elif r.status_code == 422:
+                print(f"  ℹ️  {league}: keine Spiele gerade")
+            else:
+                print(f"  ⚠️  {league}: {r.status_code}")
+                if r.status_code in [401, 429]:
+                    print("  ❌ API Limit — Abbruch Fallback")
+                    break
+        except Exception as e:
+            print(f"  ⚠️  {league}: {e}")
+    print(f"  ✅ Fallback gesamt: {len(all_odds)} Spiele")
+    _soccer_fallback_cache = all_odds
     return all_odds
 
 def fetch_pinnacle_odds(sport_key):
@@ -488,13 +537,36 @@ def proc_soccer(games):
                 icon = "🟢" if rec == "WETTEN" else "👁 "
                 print(f"  {icon} {name} [{league}]: {team} {ws:.0f}% q{q:.2f} e{edge:.1f}% → {rec}")
             else:
-                # Kein Pinnacle — nur Leo WS% tracken
-                if hp>=ap and hp>=dp: team,ws = home,hp
-                elif ap>=hp and ap>=dp: team,ws = away,ap
-                else: team,ws = "Draw",dp
-                q, edge, sc, km, rec, stake, impl = 0, 0, 0, 0, "TRACK", 0, round(ws,1)
-                tracking, is_pick = True, False
-                print(f"  👁  {name} [{league}]: H{hp:.0f}% D{dp:.0f}% A{ap:.0f}% (kein Pinnacle)")
+                # Kein Pinnacle → Fallback-Quoten versuchen
+                if 'fallback_odds' not in dir():
+                    pass  # wird unten geladen
+                fallback = fetch_all_soccer_fallback_odds()
+                fbh, fba, fbd = find_pinnacle_odds(home, away, fallback)
+
+                if fbh > 1 or fba > 1:
+                    print(f"    📊 Fallback-Quote: {home} {fbh:.2f} | {away} {fba:.2f}")
+                    eh = calc_edge(hp, fbh) if fbh > 1 else -99
+                    ea = calc_edge(ap, fba) if fba > 1 else -99
+                    ed = calc_edge(dp, fbd) if fbd > 1 else -99
+                    best_edge = max(eh, ea, ed)
+                    if eh == best_edge:   team, ws, q, edge = home, hp, fbh, eh
+                    elif ea == best_edge: team, ws, q, edge = away, ap, fba, ea
+                    else:                 team, ws, q, edge = "Draw", dp, fbd, ed
+                    sc, km, rec = calc_score(edge, q, ws)
+                    stake = calc_kelly(ws, q) * KELLY * km * BANKROLL if q > 1 else 0
+                    impl = round(1/q*100, 1) if q > 0 else round(ws, 1)
+                    tracking = rec in ["SKIP", "AUTO-SKIP"] or q <= 1
+                    is_pick = rec == "WETTEN" and q > 1
+                    icon = "🟢" if rec == "WETTEN" else "👁 "
+                    print(f"  {icon} {name} [{league}]: {team} {ws:.0f}% q{q:.2f} e{edge:.1f}% → {rec} (Fallback)")
+                else:
+                    # Wirklich keine Quoten verfügbar
+                    if hp>=ap and hp>=dp: team,ws = home,hp
+                    elif ap>=hp and ap>=dp: team,ws = away,ap
+                    else: team,ws = "Draw",dp
+                    q, edge, sc, km, rec, stake, impl = 0, 0, 0, 0, "TRACK", 0, round(ws,1)
+                    tracking, is_pick = True, False
+                    print(f"  👁  {name} [{league}]: H{hp:.0f}% D{dp:.0f}% A{ap:.0f}% (kein Pinnacle, kein Fallback)")
 
             out.append({"match":name,"team":team,"ws":round(ws,1),"odds":round(q,3),
                 "edge":round(edge,2),"impl":impl,"score":sc,"rec":rec,"stake":round(stake,2),
