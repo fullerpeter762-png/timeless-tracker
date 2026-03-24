@@ -327,21 +327,104 @@ def calc_kelly(ws, q):
     b = q-1; p = ws/100
     return max(0, (b*p-(1-p))/b) if b>0 else 0
 
-def calc_score(ep, q, ws):
+def calc_score(ep, q, ws, sport='nba'):
+    """
+    Sport-spezifischer Smart Score.
+    Gibt zurück: (score, kelly_multiplier, empfehlung)
+
+    Tennis Goldzonen (aus echten Daten):
+      1.80–2.50 → ~100% WR  → Goldzone, volle Punkte
+      2.50–3.00 →  40%  WR  → max ÜBERLEGEN
+      3.00+     →   0%  WR  → AUTO-SKIP
+
+    NBA Goldzonen (aus echten Daten):
+      2.00–2.50 → 62.5% WR  → Goldzone, volle Punkte
+      1.80–2.00 → gut
+      2.50–3.00 → wenig Punkte
+      3.50+     → AUTO-SKIP
+    """
     s = 0
-    if 2.00<=q<2.50:  s+=3
-    elif 1.80<=q<2.00: s+=2
-    elif 2.50<=q<3.00: s+=1
-    if ws>=70:   s+=3
-    elif ws>=60: s+=2
-    elif ws>=55: s+=1
-    if 4<=ep<=12:    s+=2
-    elif 12<ep<=25:  s+=1
-    if q>=3.50 or ep>100: return s, 0, "AUTO-SKIP"
-    if s>=8:   return s, 1.0, "WETTEN"
-    elif s>=6: return s, 0.75, "WETTEN"
-    elif s>=4: return s, 0.5, "ÜBERLEGEN"
-    return s, 0, "SKIP"
+
+    # ── TENNIS ────────────────────────────────────────────
+    if sport == 'tennis':
+        # Hard filter: Quote 3.0+ → 0% WR bewiesen → sofort raus
+        if q >= 3.0:
+            return s, 0, "AUTO-SKIP"
+
+        # Odds-Zone Punkte (Tennis-spezifisch)
+        if 1.80 <= q <= 2.50:  s += 3  # Goldzone
+        # 2.50–3.00: keine Punkte für Quote — zu schwache Zone
+
+        # WS% Punkte (identisch zu NBA)
+        if ws >= 70:    s += 3
+        elif ws >= 60:  s += 2
+        elif ws >= 55:  s += 1
+
+        # Edge Punkte
+        if 4 <= ep <= 12:    s += 2
+        elif 12 < ep <= 25:  s += 1
+        if ep > 100:         return s, 0, "AUTO-SKIP"
+
+        # Quote 2.50–3.00: egal wie hoch Score → max ÜBERLEGEN
+        if 2.50 < q < 3.0:
+            if s >= 4:  return s, 0.5, "ÜBERLEGEN"
+            return s, 0, "SKIP"
+
+        # Quote 1.80–2.50: normales Scoring
+        if s >= 8:   return s, 1.0,  "WETTEN"
+        elif s >= 6: return s, 0.75, "WETTEN"
+        elif s >= 4: return s, 0.5,  "ÜBERLEGEN"
+        return s, 0, "SKIP"
+
+    # ── FUSSBALL ───────────────────────────────────────────
+    elif sport == 'football':
+        # Hard filter: Quote 4.0+ → zu viel Varianz
+        if q >= 4.0 or ep > 100:
+            return s, 0, "AUTO-SKIP"
+
+        # Odds-Zone Punkte
+        if 1.50 <= q < 2.00:   s += 3
+        elif 2.00 <= q < 2.50: s += 2
+        elif 2.50 <= q < 3.50: s += 1
+
+        # WS% Punkte
+        if ws >= 65:    s += 3
+        elif ws >= 55:  s += 2
+        elif ws >= 45:  s += 1
+
+        # Edge Punkte (Fußball Min-Schwelle 5%)
+        if 5 <= ep <= 15:    s += 2
+        elif 15 < ep <= 30:  s += 1
+
+        if s >= 8:   return s, 1.0,  "WETTEN"
+        elif s >= 6: return s, 0.75, "WETTEN"
+        elif s >= 4: return s, 0.5,  "ÜBERLEGEN"
+        return s, 0, "SKIP"
+
+    # ── NBA (default) ──────────────────────────────────────
+    else:
+        # Hard filter
+        if q >= 3.50 or ep > 100:
+            return s, 0, "AUTO-SKIP"
+
+        # Odds-Zone Punkte
+        if 2.00 <= q < 2.50:   s += 3  # Goldzone: 62.5% WR bewiesen
+        elif 1.80 <= q < 2.00: s += 2
+        elif 2.50 <= q < 3.00: s += 1
+
+        # WS% Punkte
+        if ws >= 70:    s += 3
+        elif ws >= 60:  s += 2
+        elif ws >= 55:  s += 1
+
+        # Edge Punkte
+        if 4 <= ep <= 12:    s += 2
+        elif 12 < ep <= 25:  s += 1
+
+        if s >= 8:   return s, 1.0,  "WETTEN"
+        elif s >= 6: return s, 0.75, "WETTEN"
+        elif s >= 4: return s, 0.5,  "ÜBERLEGEN"
+        return s, 0, "SKIP"
 
 def normalize_league(l):
     if not l: return 'football'
@@ -460,7 +543,7 @@ def proc_nba(games):
             ea = calc_edge(aws, aq) if aq>1 else -99
             if eh>=ea: ws,q,ep,team = hws,hq,eh,home
             else:      ws,q,ep,team = aws,aq,ea,away
-            sc,km,rec = calc_score(ep, q, ws)
+            sc,km,rec = calc_score(ep, q, ws, sport='nba')
             st = calc_kelly(ws,q)*KELLY*km*BANKROLL if q>1 else 0
             icon = "🟢" if rec=="WETTEN" else "👁 "
             print(f"  {icon} {name}: {team} {ws:.0f}% q{q:.2f} e{ep:.1f}% → {rec}")
@@ -529,7 +612,7 @@ def proc_soccer(games):
                 if eh == best_edge:   team, ws, q, edge = home, hp, phq, eh
                 elif ea == best_edge: team, ws, q, edge = away, ap, paq, ea
                 else:                 team, ws, q, edge = "Draw", dp, pdq, ed
-                sc, km, rec = calc_score(edge, q, ws)
+                sc, km, rec = calc_score(edge, q, ws, sport='football')
                 stake = calc_kelly(ws, q) * KELLY * km * BANKROLL if q > 1 else 0
                 impl = round(1/q*100, 1) if q > 0 else round(ws, 1)
                 tracking = rec in ["SKIP", "AUTO-SKIP"] or q <= 1
@@ -552,7 +635,7 @@ def proc_soccer(games):
                     if eh == best_edge:   team, ws, q, edge = home, hp, fbh, eh
                     elif ea == best_edge: team, ws, q, edge = away, ap, fba, ea
                     else:                 team, ws, q, edge = "Draw", dp, fbd, ed
-                    sc, km, rec = calc_score(edge, q, ws)
+                    sc, km, rec = calc_score(edge, q, ws, sport='football')
                     stake = calc_kelly(ws, q) * KELLY * km * BANKROLL if q > 1 else 0
                     impl = round(1/q*100, 1) if q > 0 else round(ws, 1)
                     tracking = rec in ["SKIP", "AUTO-SKIP"] or q <= 1
@@ -655,7 +738,7 @@ def proc_tennis(games_tuple):
             e2 = calc_edge(ws2,q2) if q2>1 else -99
             if e1>=e2: ws,q,ep,player = ws1,q1,e1,p1
             else:      ws,q,ep,player = ws2,q2,e2,p2
-            sc,km,rec = calc_score(ep,q,ws)
+            sc,km,rec = calc_score(ep,q,ws, sport='tennis')
             st = calc_kelly(ws,q)*KELLY*km*BANKROLL if q>1 else 0
             icon = "🟢" if rec=="WETTEN" else "👁 "
             print(f"  {icon} {name}: {player} {ws:.0f}% q{q:.2f} e{ep:.1f}% → {rec}")
