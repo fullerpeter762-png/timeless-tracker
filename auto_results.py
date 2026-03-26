@@ -137,54 +137,91 @@ def names_match(a, b):
 #  SUPABASE — OFFENE WETTEN LADEN
 # ══════════════════════════════════════════════════════
 def get_open_bets(token):
-    """Alle Eintraege mit result='open' oder result=null laden."""
-    r = requests.get(
-        f"{OUR_URL}/rest/v1/bets",
-        params={
-            "select": "id,match,sport,date,result,betteam,note",
-            "or": "(result.eq.open,result.is.null)"
-        },
-        headers=our_h(token),
-        timeout=15
-    )
-    if r.status_code != 200:
-        print(f"❌ Fehler beim Laden offener Wetten: {r.text[:200]}")
-        return []
+    """Alle Eintraege mit result='open' oder result=null laden.
+    
+    Fixes:
+    1. Pagination: Supabase hat 1000-Zeilen-Limit — alle Seiten holen
+    2. Deduplication: Gleiche Matches zusammenfassen (Duplikat-Schutz)
+       → pro Match nur 1 API-Call, alle Duplikat-IDs gemeinsam updaten
+    """
+    all_bets = []
+    from_row = 0
+    PAGE = 1000
 
-    bets = r.json()
-    print(f"📋 {len(bets)} offene Eintraege gefunden")
-    return bets
+    # Fix 1: Pagination
+    while True:
+        r = requests.get(
+            f"{OUR_URL}/rest/v1/bets",
+            params={
+                "select": "id,match,sport,date,result,betteam,note",
+                "or": "(result.eq.open,result.is.null)",
+                "order": "created_at.asc",
+                "offset": str(from_row),
+                "limit": str(PAGE),
+            },
+            headers={**our_h(token), "Range": f"{from_row}-{from_row+PAGE-1}",
+                     "Range-Unit": "items", "Prefer": "count=none"},
+            timeout=15
+        )
+        if r.status_code not in [200, 206]:
+            print(f"❌ Fehler beim Laden offener Wetten: {r.text[:200]}")
+            break
+        page = r.json()
+        if not page:
+            break
+        all_bets.extend(page)
+        if len(page) < PAGE:
+            break
+        from_row += PAGE
+
+    print(f"📋 {len(all_bets)} offene Eintraege gefunden (alle Seiten)")
+
+    # Fix 2: Deduplication
+    # Pro (sport + date + match) nur einen repraesentativen Eintrag,
+    # aber alle IDs merken damit alle Duplikate geupated werden.
+    seen = {}  # key -> {"bet": bet, "ids": [id1, id2, ...]}
+    for b in all_bets:
+        key = f"{b.get('sport','')}__{b.get('date','')}__{b.get('match','').lower().strip()}"
+        if key not in seen:
+            seen[key] = {"bet": b, "ids": [b["id"]]}
+        else:
+            seen[key]["ids"].append(b["id"])
+
+    unique = list(seen.values())
+    dupes = sum(len(x["ids"]) - 1 for x in unique)
+    print(f"   → {len(unique)} einzigartige Matches ({dupes} Duplikate zusammengefasst)")
+
+    return unique  # Liste von {"bet": ..., "ids": [...]}
 
 # ══════════════════════════════════════════════════════
 #  SUPABASE — ERGEBNIS SCHREIBEN
 # ══════════════════════════════════════════════════════
-def update_result(token, bet_id, result, match_str):
-    """Win/Loss in Supabase schreiben. Ueberschreibt nie bereits gesetztes Ergebnis."""
-    # Sicherheits-Check: aktuellen Status nochmal holen (Duplikat-Schutz)
-    check = requests.get(
-        f"{OUR_URL}/rest/v1/bets",
-        params={"select": "result", "id": f"eq.{bet_id}"},
-        headers=our_h(token),
-        timeout=8
-    )
-    if check.status_code == 200 and check.json():
-        current = check.json()[0].get("result")
-        if current not in [None, "open"]:
-            print(f"   🔒 Skip — bereits eingetragen: {current} ({match_str})")
-            return False
+def update_result(token, bet_ids, result, match_str):
+    """Win/Loss fuer eine Liste von IDs schreiben (Duplikat-aware).
+    bet_ids kann ein einzelner String oder eine Liste von IDs sein.
+    """
+    if isinstance(bet_ids, str):
+        bet_ids = [bet_ids]
 
+    # Alle IDs per IN-Query auf einmal updaten
+    ids_str = ",".join(f"\"" + str(i) + "\"" for i in bet_ids)
+    ids_param = "(" + ",".join(str(i) for i in bet_ids) + ")"
     r = requests.patch(
-        f"{OUR_URL}/rest/v1/bets?id=eq.{bet_id}",
-        headers=our_h(token),
+        f"{OUR_URL}/rest/v1/bets",
+        params={"id": f"in.{ids_param}",
+                "result": "eq.open"},  # nur open updaten (Sicherheit)
+        headers={**our_h(token), "Prefer": "return=minimal"},
         json={"result": result},
         timeout=10
     )
     if r.status_code in [200, 204]:
         icon = "🟢" if result == "win" else "🔴"
-        print(f"   {icon} {result.upper()} gesetzt — {match_str}")
+        n = len(bet_ids)
+        suffix = f" ({n}x)" if n > 1 else ""
+        print(f"   {icon} {result.upper()} gesetzt{suffix} — {match_str}")
         return True
     else:
-        print(f"   ❌ Update fehlgeschlagen (ID {bet_id}): {r.text[:150]}")
+        print(f"   ❌ Update fehlgeschlagen: {r.text[:150]}")
         return False
 
 # ══════════════════════════════════════════════════════
@@ -313,14 +350,15 @@ def resolve_nba(bet, date_str):
 
 def proc_nba_bets(bets, token):
     """Alle offenen NBA-Wetten verarbeiten."""
-    nba_bets = [b for b in bets if b.get("sport") == "nba"]
+    nba_bets = [item for item in bets if item["bet"].get("sport") == "nba"]
     print(f"\n🏀 NBA — {len(nba_bets)} offene Wetten")
     if not nba_bets:
         return 0
 
     # Alle benoenigten Daten vorher sammeln → minimiert API Calls
     needed_dates = set()
-    for bet in nba_bets:
+    for item in nba_bets:
+        bet = item["bet"]
         dt = parse_date(bet.get("date", ""))
         if dt:
             needed_dates.add(dt.strftime("%Y-%m-%d"))
@@ -352,7 +390,7 @@ def proc_nba_bets(bets, token):
                     break
 
         if result in ["win", "loss"]:
-            if update_result(token, bet["id"], result, match_str):
+            if update_result(token, item["ids"], result, match_str):
                 resolved += 1
         else:
             print(f"  ❓ Nicht aufgeloest: {match_str}")
@@ -514,7 +552,7 @@ def resolve_soccer(bet, date_str):
 
 def proc_soccer_bets(bets, token):
     """Alle offenen Fussball-Wetten verarbeiten."""
-    soccer_bets = [b for b in bets if b.get("sport") == "football"]
+    soccer_bets = [item for item in bets if item["bet"].get("sport") == "football"]
     print(f"\n⚽ Fussball — {len(soccer_bets)} offene Wetten")
     if not soccer_bets:
         return 0
@@ -522,7 +560,8 @@ def proc_soccer_bets(bets, token):
     dates    = date_range()
     resolved = 0
 
-    for bet in soccer_bets:
+    for item in soccer_bets:
+        bet = item["bet"]
         match_str = bet.get("match", "?")
         result    = None
 
@@ -539,7 +578,7 @@ def proc_soccer_bets(bets, token):
                     break
 
         if result in ["win", "loss"]:
-            if update_result(token, bet["id"], result, match_str):
+            if update_result(token, item["ids"], result, match_str):
                 resolved += 1
         else:
             print(f"  ❓ Nicht aufgeloest: {match_str}")
@@ -639,7 +678,7 @@ def resolve_tennis(bet, date_str):
 
 def proc_tennis_bets(bets, token):
     """Alle offenen Tennis-Wetten verarbeiten."""
-    tennis_bets = [b for b in bets if b.get("sport") == "tennis"]
+    tennis_bets = [item for item in bets if item["bet"].get("sport") == "tennis"]
     print(f"\n🎾 Tennis — {len(tennis_bets)} offene Wetten")
     if not tennis_bets:
         return 0
@@ -647,7 +686,8 @@ def proc_tennis_bets(bets, token):
     dates    = date_range()
     resolved = 0
 
-    for bet in tennis_bets:
+    for item in tennis_bets:
+        bet = item["bet"]
         match_str = bet.get("match", "?")
         result    = None
 
@@ -664,7 +704,7 @@ def proc_tennis_bets(bets, token):
                     break
 
         if result in ["win", "loss"]:
-            if update_result(token, bet["id"], result, match_str):
+            if update_result(token, item["ids"], result, match_str):
                 resolved += 1
         else:
             print(f"  ❓ Nicht aufgeloest: {match_str}")
