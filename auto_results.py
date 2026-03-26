@@ -371,7 +371,8 @@ def proc_nba_bets(bets, token):
         fetch_nba_day(d)
 
     resolved = 0
-    for bet in nba_bets:
+    for item in nba_bets:
+        bet = item["bet"]
         match_str = bet.get("match", "?")
         result    = None
 
@@ -734,9 +735,9 @@ def main():
         print("✅ Nichts zu tun — keine offenen Wetten")
         return
 
-    nba_c    = sum(1 for b in bets if b.get("sport") == "nba")
-    soccer_c = sum(1 for b in bets if b.get("sport") == "football")
-    tennis_c = sum(1 for b in bets if b.get("sport") == "tennis")
+    nba_c    = sum(1 for b in bets if b["bet"].get("sport") == "nba")
+    soccer_c = sum(1 for b in bets if b["bet"].get("sport") == "football")
+    tennis_c = sum(1 for b in bets if b["bet"].get("sport") == "tennis")
     print(f"   🏀 NBA: {nba_c} | ⚽ Fussball: {soccer_c} | 🎾 Tennis: {tennis_c}")
 
     # 3. Ergebnisse holen und eintragen
