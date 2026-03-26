@@ -596,30 +596,48 @@ def fetch_tennis_day(date_str):
     if date_str in _tennis_cache:
         return _tennis_cache[date_str]
 
-    try:
-        r = requests.get(
-            f"https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/{date_str}",
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Accept": "application/json",
-                "Referer": "https://www.sofascore.com/"
-            },
-            timeout=15
-        )
-        if r.status_code != 200:
-            print(f"  ⚠️  Sofascore {date_str}: HTTP {r.status_code}")
-            _tennis_cache[date_str] = []
-            return []
+    # Vollstaendige Browser-Headers gegen 403
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://www.sofascore.com/",
+        "Origin": "https://www.sofascore.com",
+        "sec-ch-ua": '"Chromium";v="122", "Not(A:Brand";v="24"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-site",
+        "Cache-Control": "no-cache",
+    }
 
-        events = r.json().get("events", [])
-        _tennis_cache[date_str] = events
-        print(f"  📊 Tennis {date_str}: {len(events)} Events geladen")
-        return events
+    # 2 Versuche (403 kann transient sein)
+    for attempt in range(2):
+        try:
+            r = requests.get(
+                f"https://api.sofascore.com/api/v1/sport/tennis/scheduled-events/{date_str}",
+                headers=headers,
+                timeout=15
+            )
+            if r.status_code == 200:
+                events = r.json().get("events", [])
+                _tennis_cache[date_str] = events
+                print(f"  📊 Tennis {date_str}: {len(events)} Events geladen")
+                return events
+            elif r.status_code == 403 and attempt == 0:
+                print(f"  ⚠️  Sofascore 403 — warte 3s und versuche nochmal...")
+                time.sleep(3)
+            else:
+                print(f"  ⚠️  Sofascore {date_str}: HTTP {r.status_code}")
+                break
+        except Exception as e:
+            print(f"  ❌ Sofascore Exception: {e}")
+            break
 
-    except Exception as e:
-        print(f"  ❌ Sofascore Exception: {e}")
-        _tennis_cache[date_str] = []
-        return []
+    _tennis_cache[date_str] = []
+    return []
 
 def resolve_tennis(bet, date_str):
     """
